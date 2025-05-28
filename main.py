@@ -3,6 +3,12 @@ import numpy as np
 import time
 from pygame import mixer
 import os
+import sys
+
+# Check if video file path is provided as command line argument
+video_path = None
+if len(sys.argv) > 1 and sys.argv[1] == '--video' and len(sys.argv) > 2:
+    video_path = sys.argv[2]
 
 print("Starting object detection application...")
 
@@ -72,38 +78,94 @@ def calculate_iou(box1, box2):
     
     return intersection_area / union_area
 
-# Dictionary of known object widths in cm
-# These are rough estimates and can be calibrated for better accuracy
+# Dictionary of known object widths in cm (Expanded with more objects)
 KNOWN_WIDTHS = {
+    # People and animals
     "person": 40,       # Average width of a person
+    "dog": 30,          # Average width of a dog
+    "cat": 20,          # Average width of a cat
+    "bird": 10,         # Average width of a bird
+    
+    # Vehicles
     "car": 180,         # Average width of a car
-    "bottle": 8,        # Average width of a bottle
-    "cup": 8,           # Average width of a cup
-    "cell phone": 7,    # Average width of a cell phone
-    "book": 15,         # Average width of a book
+    "bicycle": 60,      # Average width of a bicycle
+    "motorcycle": 80,   # Average width of a motorcycle
+    "bus": 250,         # Average width of a bus
+    "truck": 240,       # Average width of a truck
+    
+    # Electronics
     "laptop": 35,       # Average width of a laptop
-    "chair": 50,        # Average width of a chair
+    "cell phone": 7,    # Average width of a cell phone
     "tv": 100,          # Average width of a TV
     "mouse": 6,         # Average width of a mouse
     "keyboard": 35,     # Average width of a keyboard
+    "remote": 5,        # Average width of a remote
+    
+    # Furniture
+    "chair": 50,        # Average width of a chair
+    "couch": 200,       # Average width of a couch
+    "bed": 150,         # Average width of a bed
+    "dining table": 120,# Average width of a dining table
+    "desk": 120,        # Average width of a desk
+    
+    # Kitchen items
+    "bottle": 8,        # Average width of a bottle
+    "cup": 8,           # Average width of a cup
+    "bowl": 15,         # Average width of a bowl
+    "plate": 25,        # Average width of a plate
+    "fork": 2,          # Average width of a fork
+    "knife": 2,         # Average width of a knife
+    "spoon": 2,         # Average width of a spoon
+    
+    # Common objects
+    "book": 15,         # Average width of a book
+    "clock": 20,        # Average width of a clock
+    "vase": 15,         # Average width of a vase
+    "scissors": 8,      # Average width of scissors
+    "teddy bear": 25,   # Average width of a teddy bear
+    "hair drier": 20,   # Average width of a hair drier
+    "toothbrush": 2,    # Average width of a toothbrush
+    
+    # Sports equipment
+    "tennis racket": 30,# Average width of a tennis racket
+    "baseball bat": 8,  # Average width of a baseball bat
+    "baseball glove": 25,# Average width of a baseball glove
+    "skateboard": 20,   # Average width of a skateboard
+    "sports ball": 15,  # Average width of a sports ball
 }
-# Default width for objects not in the dictionary
-DEFAULT_WIDTH = 15
 
-# Focal length (can be calibrated for your specific camera)
+# Adjust default width and focal length
+DEFAULT_WIDTH = 20  # Increased from 15
 FOCAL_LENGTH = 800
 
 # Set up video capture
 try:
-    print("Opening webcam...")
-    cap = cv2.VideoCapture(0)
+    if video_path:
+        print(f"Opening video file: {video_path}")
+        cap = cv2.VideoCapture(video_path)
+    else:
+        print("Opening webcam...")
+        cap = cv2.VideoCapture(0)
+    
     if not cap.isOpened():
-        print("Error: Could not open webcam")
+        print("Error: Could not open video source")
         exit(1)
-    print("Webcam opened successfully")
+    print("Video source opened successfully")
 except Exception as e:
-    print(f"Error with webcam: {e}")
+    print(f"Error with video source: {e}")
     exit(1)
+
+# Get video properties
+fps = cap.get(cv2.CAP_PROP_FPS)
+width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+# Create output video writer if processing a video file
+if video_path:
+    output_path = os.path.splitext(video_path)[0] + '_output.mp4'
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    print(f"Output video will be saved as: {output_path}")
 
 display_size = (800, 600)
 cv2.namedWindow("Object Detection", cv2.WINDOW_NORMAL)
@@ -134,40 +196,69 @@ try:
             
         ret, frame = cap.read()
         if not ret:
-            print("Error: Can't receive frame from camera")
+            if video_path:
+                print("End of video file reached")
+            else:
+                print("Error: Can't receive frame from camera")
             break
 
         height, width, _ = frame.shape
 
-        # Prepare image for YOLO
-        blob = cv2.dnn.blobFromImage(frame, 1/255.0, (416, 416), swapRB=True, crop=False)
-        net.setInput(blob)
-        detections = net.forward(layer_names)
+        # Prepare image for YOLO with multi-scale detection
+        scales = [0.8, 1.0, 1.2]  # Multiple scales for better detection
+        all_boxes = []
+        all_confidences = []
+        all_class_ids = []
+        
+        for scale in scales:
+            # Calculate new dimensions
+            new_width = int(width * scale)
+            new_height = int(height * scale)
+            
+            # Resize image for this scale
+            if scale != 1.0:
+                scaled_frame = cv2.resize(frame, (new_width, new_height))
+            else:
+                scaled_frame = frame
+            
+            # Prepare blob for this scale
+            blob = cv2.dnn.blobFromImage(scaled_frame, 1/255.0, (416, 416), 
+                                       swapRB=True, crop=False)
+            net.setInput(blob)
+            detections = net.forward(layer_names)
 
-        # Process detections
-        boxes = []
-        confidences = []
-        class_ids = []
+            # Process detections for this scale
+            for detection in detections:
+                for obj in detection:
+                    scores = obj[5:]
+                    class_id = np.argmax(scores)
+                    confidence = scores[class_id]
 
-        # Collect all detections
-        for detection in detections:
-            for obj in detection:
-                scores = obj[5:]
-                class_id = np.argmax(scores)
-                confidence = scores[class_id]
+                    # Lower confidence threshold for more detections
+                    if confidence > 0.4:  # Reduced from 0.6
+                        center_x = int(obj[0] * new_width)
+                        center_y = int(obj[1] * new_height)
+                        w = int(obj[2] * new_width)
+                        h = int(obj[3] * new_height)
 
-                if confidence > 0.6:  # Increased confidence threshold
-                    center_x = int(obj[0] * width)
-                    center_y = int(obj[1] * height)
-                    w = int(obj[2] * width)
-                    h = int(obj[3] * height)
+                        x = int(center_x - w / 2)
+                        y = int(center_y - h / 2)
 
-                    x = int(center_x - w / 2)
-                    y = int(center_y - h / 2)
+                        # Scale back coordinates if needed
+                        if scale != 1.0:
+                            x = int(x / scale)
+                            y = int(y / scale)
+                            w = int(w / scale)
+                            h = int(h / scale)
 
-                    boxes.append([x, y, w, h])
-                    confidences.append(float(confidence))
-                    class_ids.append(class_id)
+                        all_boxes.append([x, y, w, h])
+                        all_confidences.append(float(confidence))
+                        all_class_ids.append(class_id)
+
+        # Use all collected detections
+        boxes = all_boxes
+        confidences = all_confidences
+        class_ids = all_class_ids
 
         # Group boxes by class
         boxes_by_class = {}
@@ -179,19 +270,20 @@ try:
         # Create a new list that will store the indices of boxes to keep after class-wise filtering
         filtered_indices = []
         
-        # Process each class separately
+        # Process each class separately with adjusted NMS
         for class_id, class_boxes in boxes_by_class.items():
             # Sort boxes by confidence (highest first)
             class_boxes.sort(key=lambda x: x[2], reverse=True)
             
-            # Get indices of boxes for this class (sorted by confidence)
+            # Get indices of boxes for this class
             indices_for_class = [box[0] for box in class_boxes]
             boxes_for_class = [box[1] for box in class_boxes]
             
-            # Apply class-specific NMS with stricter threshold
+            # Apply class-specific NMS with adjusted threshold
             nms_results = cv2.dnn.NMSBoxes(boxes_for_class, 
                                           [confidences[i] for i in indices_for_class], 
-                                          0.6, 0.2)  # Higher confidence threshold, lower NMS threshold
+                                          0.4,    # Lower confidence threshold (was 0.6)
+                                          0.3)    # Higher NMS threshold (was 0.2) to keep more overlapping boxes
             
             if len(nms_results) > 0:
                 if isinstance(nms_results[0], list):  # Handle older OpenCV versions
@@ -221,8 +313,8 @@ try:
             label = classes[class_id]
             confidence = confidences[i]
             
-            # Skip very small detections (likely false positives)
-            min_size = 20  # Minimum width/height in pixels
+            # Skip very small detections (reduced minimum size)
+            min_size = 15  # Reduced from 20 pixels
             if w < min_size or h < min_size:
                 continue
                 
@@ -280,6 +372,10 @@ try:
         # Display the frame
         cv2.imshow("Object Detection", frame)
         
+        # Save frame to output video if processing a video file
+        if video_path:
+            out.write(frame)
+        
         # Calculate and display FPS
         end_time = time.time()
         fps = 1/(end_time - start_time)
@@ -296,5 +392,7 @@ finally:
     # Clean up
     print("Cleaning up resources...")
     cap.release()
+    if video_path:
+        out.release()
     cv2.destroyAllWindows()
     print("Application closed")
